@@ -19,7 +19,7 @@ const LETTER_PARAGRAPHS = [
 
     'Aku cuma pengen banget Valentine ini berhasil dan bikin kamu happy, saking pengennya aku jadi overthinking.',
     'Jadi ini janjiku, aku akan terus berusaha. Emang engga sempurna, tapi aku tulus ouen. Nggak selalu bener, tapi aku selalu disini buat kamu.',
-    'Dengan seluruh hatiku,\nDari aku yang selalu sayang kamu ♡',
+    'Dari Nyan yang selalu sayang kamu ♡',
 ]
 
 /* ═══════════════════════════════════════════════
