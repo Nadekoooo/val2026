@@ -71,8 +71,37 @@ export default function BottomNav() {
                         const isItemLocked = lockable && isLocked
                         const isShaking = shakingItem === href
 
-                        // If locked, render as disabled div instead of Link
-                        const ItemWrapper = isItemLocked ? 'div' : Link
+                        const itemContent = (
+                            <>
+                                {/* Lock Icon Overlay */}
+                                {isItemLocked && (
+                                    <Lock className="absolute -top-1 -right-1 w-3 h-3 text-ink/60" />
+                                )}
+
+                                <Icon
+                                    className={`w-[18px] h-[18px] transition-transform duration-200 ${isActive ? 'scale-110' : ''}`}
+                                />
+                                <span
+                                    className={`
+                                        text-xs font-medium tracking-wide overflow-hidden transition-all duration-300
+                                        ${isActive ? 'max-w-[60px] opacity-100' : 'max-w-0 opacity-0'}
+                                    `}
+                                >
+                                    {label}
+                                </span>
+                            </>
+                        )
+
+                        const itemClass = `
+                            relative flex items-center gap-2 px-4 py-2.5 rounded-full
+                            transition-all duration-300 ease-out select-none
+                            ${isItemLocked 
+                                ? 'grayscale opacity-30 cursor-not-allowed' 
+                                : isActive
+                                    ? 'bg-accent/15 text-accent shadow-sm'
+                                    : 'text-ink/40 hover:text-ink/70 hover:bg-white/40'
+                            }
+                        `
 
                         return (
                             <motion.div
@@ -82,37 +111,21 @@ export default function BottomNav() {
                                 } : {}}
                                 transition={{ duration: 0.4 }}
                             >
-                                <ItemWrapper
-                                    {...(!isItemLocked && { href })}
-                                    onClick={isItemLocked ? () => handleLockedClick(href) : undefined}
-                                    className={`
-                                        relative flex items-center gap-2 px-4 py-2.5 rounded-full
-                                        transition-all duration-300 ease-out select-none
-                                        ${isItemLocked 
-                                            ? 'grayscale opacity-30 cursor-not-allowed' 
-                                            : isActive
-                                                ? 'bg-accent/15 text-accent shadow-sm'
-                                                : 'text-ink/40 hover:text-ink/70 hover:bg-white/40'
-                                        }
-                                    `}
-                                >
-                                    {/* Lock Icon Overlay */}
-                                    {isItemLocked && (
-                                        <Lock className="absolute -top-1 -right-1 w-3 h-3 text-ink/60" />
-                                    )}
-
-                                    <Icon
-                                        className={`w-[18px] h-[18px] transition-transform duration-200 ${isActive ? 'scale-110' : ''}`}
-                                    />
-                                    <span
-                                        className={`
-                                            text-xs font-medium tracking-wide overflow-hidden transition-all duration-300
-                                            ${isActive ? 'max-w-[60px] opacity-100' : 'max-w-0 opacity-0'}
-                                        `}
+                                {isItemLocked ? (
+                                    <div
+                                        onClick={() => handleLockedClick(href)}
+                                        className={itemClass}
                                     >
-                                        {label}
-                                    </span>
-                                </ItemWrapper>
+                                        {itemContent}
+                                    </div>
+                                ) : (
+                                    <Link
+                                        href={href}
+                                        className={itemClass}
+                                    >
+                                        {itemContent}
+                                    </Link>
+                                )}
                             </motion.div>
                         )
                     })}

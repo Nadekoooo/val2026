@@ -2,6 +2,7 @@ import type { Metadata } from 'next'
 import { playfair, caveat } from '@/lib/fonts'
 import FloatingDoodles from '@/components/FloatingDoodles'
 import BottomNav from '@/components/BottomNav'
+import MusicPlayer from '@/components/MusicPlayer'
 import './globals.css'
 
 export const metadata: Metadata = {
@@ -22,6 +23,7 @@ export default function RootLayout({
           {children}
         </main>
         <BottomNav />
+        <MusicPlayer />
       </body>
     </html>
   )
