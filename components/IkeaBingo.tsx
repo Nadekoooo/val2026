@@ -16,6 +16,19 @@ interface BingoTile {
     rotation: number
 }
 
+interface Prize {
+    title: string
+    emoji: string
+    description: string
+    code: string
+}
+
+interface SavedState {
+    tiles: BingoTile[]
+    claimedMilestones: number
+    hasClaimedGrandPrize: boolean
+}
+
 const STORAGE_KEY = 'ikea-bingo-state'
 
 const tileLabels = [
@@ -29,6 +42,40 @@ const tileLabels = [
     'Tanaman\nPlastik',
     'Meatballs /\nIce Cream',
 ]
+
+const SMALL_PRIZES: Prize[] = [
+    {
+        title: 'Free Pat-pat',
+        emoji: '👋',
+        description: 'Unlimited duration',
+        code: 'PAT-2026',
+    },
+    {
+        title: 'Free Peyuk',
+        emoji: '🫂',
+        description: 'Recharge energy',
+        code: 'HUG-2026',
+    },
+    {
+        title: 'Kupon Cubit Pipi/Perut',
+        emoji: '🤏',
+        description: 'Gemes pass',
+        code: 'PINCH-2026',
+    },
+    {
+        title: 'Traktir Eskrim',
+        emoji: '🍦',
+        description: 'Sesuai request',
+        code: 'MATCHA-2026',
+    },
+]
+
+const GRAND_PRIZE: Prize = {
+    title: 'Tium Jidat oyen',
+    emoji: '😘',
+    description: 'The Holy Grail Reward',
+    code: 'GRAND-2026',
+}
 
 function createInitialGrid(): BingoTile[] {
     return tileLabels.map((label, i) => ({
@@ -58,18 +105,21 @@ export default function IkeaBingo() {
     const [loaded, setLoaded] = useState(false)
     const [winningLines, setWinningLines] = useState<number[][]>([])
     const [showReward, setShowReward] = useState(false)
-    const [hasShownReward, setHasShownReward] = useState(false)
+    const [currentReward, setCurrentReward] = useState<Prize | null>(null)
+    const [claimedMilestones, setClaimedMilestones] = useState(0)
+    const [hasClaimedGrandPrize, setHasClaimedGrandPrize] = useState(false)
 
     useEffect(() => {
         try {
             const saved = localStorage.getItem(STORAGE_KEY)
             if (saved) {
-                const parsed: BingoTile[] = JSON.parse(saved)
-                if (parsed.length === 9) {
-                    setTiles(parsed)
-                    const lines = findWinningLines(parsed)
+                const parsed: SavedState = JSON.parse(saved)
+                if (parsed.tiles && parsed.tiles.length === 9) {
+                    setTiles(parsed.tiles)
+                    const lines = findWinningLines(parsed.tiles)
                     setWinningLines(lines)
-                    if (lines.length > 0) setHasShownReward(true)
+                    setClaimedMilestones(parsed.claimedMilestones || 0)
+                    setHasClaimedGrandPrize(parsed.hasClaimedGrandPrize || false)
                 } else {
                     setTiles(createInitialGrid())
                 }
@@ -84,9 +134,43 @@ export default function IkeaBingo() {
 
     useEffect(() => {
         if (loaded && tiles.length === 9) {
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(tiles))
+            const state: SavedState = {
+                tiles,
+                claimedMilestones,
+                hasClaimedGrandPrize,
+            }
+            localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
         }
-    }, [tiles, loaded])
+    }, [tiles, loaded, claimedMilestones, hasClaimedGrandPrize])
+
+    const showSmallPrizeConfetti = useCallback(() => {
+        confetti({ particleCount: 200, spread: 120, origin: { y: 0.5 }, colors: ['#E29578', '#D4A373', '#F9F5F1'] })
+        setTimeout(() => confetti({ particleCount: 120, angle: 60, spread: 60, origin: { x: 0 }, colors: ['#E29578', '#D4A373'] }), 200)
+        setTimeout(() => confetti({ particleCount: 120, angle: 120, spread: 60, origin: { x: 1 }, colors: ['#E29578', '#D4A373'] }), 350)
+    }, [])
+
+    const showGrandPrizeConfetti = useCallback(() => {
+        // Massive explosion for grand prize
+        const duration = 3000
+        const animationEnd = Date.now() + duration
+        const colors = ['#FFD700', '#E29578', '#D4A373', '#FF6B9D', '#F9F5F1']
+
+        const randomInRange = (min: number, max: number) => Math.random() * (max - min) + min
+
+        const interval = setInterval(() => {
+            const timeLeft = animationEnd - Date.now()
+            if (timeLeft <= 0) return clearInterval(interval)
+
+            const particleCount = 50 * (timeLeft / duration)
+            confetti({
+                particleCount,
+                startVelocity: 30,
+                spread: 360,
+                origin: { x: randomInRange(0.1, 0.9), y: Math.random() - 0.2 },
+                colors,
+            })
+        }, 250)
+    }, [])
 
     const handleCapture = useCallback(
         async (id: string, file: File) => {
@@ -94,33 +178,57 @@ export default function IkeaBingo() {
                 const base64 = await resizeImageToBase64(file, 300, 0.7)
                 setTiles((prev) => {
                     const next = prev.map((t) => (t.id === id ? { ...t, photo: base64 } : t))
-                    const lines = findWinningLines(next)
-                    setWinningLines(lines)
-                    if (lines.length > 0 && !hasShownReward) {
-                        setHasShownReward(true)
+                    const newLines = findWinningLines(next)
+                    const newCompletedCount = next.filter((t) => t.photo !== null).length
+                    const prevLineCount = winningLines.length
+                    const newLineCount = newLines.length
+
+                    setWinningLines(newLines)
+
+                    // Check for Full House (Grand Prize)
+                    if (newCompletedCount === 9 && !hasClaimedGrandPrize) {
                         setTimeout(() => {
-                            confetti({ particleCount: 200, spread: 120, origin: { y: 0.5 }, colors: ['#E29578', '#D4A373', '#F9F5F1'] })
-                            setTimeout(() => confetti({ particleCount: 120, angle: 60, spread: 60, origin: { x: 0 }, colors: ['#E29578', '#D4A373'] }), 200)
-                            setTimeout(() => confetti({ particleCount: 120, angle: 120, spread: 60, origin: { x: 1 }, colors: ['#E29578', '#D4A373'] }), 350)
+                            showGrandPrizeConfetti()
                         }, 300)
-                        setTimeout(() => setShowReward(true), 800)
-                    } else {
+                        setTimeout(() => {
+                            setCurrentReward(GRAND_PRIZE)
+                            setShowReward(true)
+                            setHasClaimedGrandPrize(true)
+                        }, 800)
+                    }
+                    // Check for new line completion (Small Prize)
+                    else if (newLineCount > prevLineCount && claimedMilestones < SMALL_PRIZES.length) {
+                        const prizeIndex = claimedMilestones
+                        setTimeout(() => {
+                            showSmallPrizeConfetti()
+                        }, 300)
+                        setTimeout(() => {
+                            setCurrentReward(SMALL_PRIZES[prizeIndex])
+                            setShowReward(true)
+                            setClaimedMilestones((prev) => prev + 1)
+                        }, 800)
+                    }
+                    // Just a regular capture
+                    else {
                         confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 }, colors: ['#E29578', '#D4A373'] })
                     }
+
                     return next
                 })
             } catch (err) {
                 console.error('Image processing failed:', err)
             }
         },
-        [hasShownReward]
+        [winningLines.length, claimedMilestones, hasClaimedGrandPrize, showSmallPrizeConfetti, showGrandPrizeConfetti]
     )
 
     const resetGrid = useCallback(() => {
         setTiles(createInitialGrid())
         setWinningLines([])
         setShowReward(false)
-        setHasShownReward(false)
+        setCurrentReward(null)
+        setClaimedMilestones(0)
+        setHasClaimedGrandPrize(false)
         localStorage.removeItem(STORAGE_KEY)
     }, [])
 
@@ -176,12 +284,21 @@ export default function IkeaBingo() {
                         <p className="font-hand text-lg text-accent font-bold">
                             ★ BINGO — {winningLines.length} line{winningLines.length > 1 ? 's' : ''}! ★
                         </p>
-                        <button
-                            onClick={() => setShowReward(true)}
-                            className="mt-1 font-hand text-xs underline text-ink/35 hover:text-ink/60 transition-colors"
-                        >
-                            View reward
-                        </button>
+                        <p className="mt-1 font-hand text-xs text-ink/45">
+                            {claimedMilestones} prize{claimedMilestones !== 1 ? 's' : ''} unlocked{hasClaimedGrandPrize ? ' + Grand Prize!' : ''}
+                        </p>
+                        {claimedMilestones > 0 && (
+                            <button
+                                onClick={() => {
+                                    const lastPrize = hasClaimedGrandPrize ? GRAND_PRIZE : SMALL_PRIZES[claimedMilestones - 1]
+                                    setCurrentReward(lastPrize)
+                                    setShowReward(true)
+                                }}
+                                className="mt-1 font-hand text-xs underline text-ink/35 hover:text-ink/60 transition-colors"
+                            >
+                                View latest reward
+                            </button>
+                        )}
                     </motion.div>
                 )}
             </AnimatePresence>
@@ -198,7 +315,7 @@ export default function IkeaBingo() {
 
             {/* Reward Modal */}
             <AnimatePresence>
-                {showReward && (
+                {showReward && currentReward && (
                     <motion.div
                         className="fixed inset-0 z-50 flex items-center justify-center p-4"
                         initial={{ opacity: 0 }}
@@ -213,16 +330,57 @@ export default function IkeaBingo() {
                             exit={{ scale: 0.9, opacity: 0 }}
                             transition={{ type: 'spring', damping: 22, stiffness: 280 }}
                         >
-                            <div className="bg-[#FDF8F4] rounded-2xl p-8 text-center shadow-scrapbook-hover" style={{ transform: 'rotate(-1deg)' }}>
+                            <div
+                                className={`
+                                    rounded-2xl p-8 text-center shadow-scrapbook-hover
+                                    ${
+                                        currentReward.code === GRAND_PRIZE.code
+                                            ? 'bg-gradient-to-br from-yellow-50 via-orange-50 to-pink-50 border-4 border-yellow-400'
+                                            : 'bg-[#FDF8F4]'
+                                    }
+                                `}
+                                style={{ transform: 'rotate(-1deg)' }}
+                            >
                                 <div className="absolute top-3 left-6 right-6 border-t-2 border-dashed border-ink/15" />
-                                <p className="font-hand text-sm text-ink/35 mb-2 mt-2">★ Reward Unlocked ★</p>
-                                <h2 className="font-hand text-3xl text-ink leading-tight mb-3">1× Free<br />Back Massage</h2>
+                                <p
+                                    className={`
+                                        font-hand text-sm mb-2 mt-2
+                                        ${
+                                            currentReward.code === GRAND_PRIZE.code
+                                                ? 'text-yellow-600 font-bold text-base'
+                                                : 'text-ink/35'
+                                        }
+                                    `}
+                                >
+                                    {currentReward.code === GRAND_PRIZE.code ? '✨ GRAND PRIZE UNLOCKED ✨' : '★ Reward Unlocked ★'}
+                                </p>
+                                <h2
+                                    className={`
+                                        font-hand text-ink leading-tight mb-3
+                                        ${
+                                            currentReward.code === GRAND_PRIZE.code
+                                                ? 'text-4xl sm:text-5xl'
+                                                : 'text-3xl'
+                                        }
+                                    `}
+                                >
+                                    {currentReward.emoji}
+                                    <br />
+                                    {currentReward.title}
+                                </h2>
                                 <div className="w-12 h-px bg-ink/15 mx-auto mb-3" />
-                                <p className="font-hand text-lg text-rose/70 mb-5">Redeemable anytime. No expiry. ♡</p>
-                                <p className="font-hand text-xs text-ink/20 mb-5">Code: LOVE-2026</p>
+                                <p className="font-hand text-lg text-rose/70 mb-5">{currentReward.description}</p>
+                                <p className="font-hand text-xs text-ink/20 mb-5">Code: {currentReward.code}</p>
                                 <button
                                     onClick={() => setShowReward(false)}
-                                    className="w-full py-3 bg-accent hover:bg-accent/90 text-white rounded-full font-hand text-lg transition-colors"
+                                    className={`
+                                        w-full py-3 rounded-full font-hand text-lg transition-colors
+                                        ${
+                                            currentReward.code === GRAND_PRIZE.code
+                                                ? 'bg-gradient-to-r from-yellow-400 via-pink-400 to-purple-400 hover:from-yellow-500 hover:via-pink-500 hover:to-purple-500 text-white font-bold'
+                                                : 'bg-accent hover:bg-accent/90 text-white'
+                                        }
+                                    `}
                                 >
                                     Claim ♡
                                 </button>
