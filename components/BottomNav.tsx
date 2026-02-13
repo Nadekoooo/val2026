@@ -9,7 +9,7 @@ import { motion, AnimatePresence } from 'framer-motion'
 /* ═══════════════════════════════════════════════
    Target Unlock Date - Synced with LockScreen
    ═══════════════════════════════════════════════ */
-const TARGET_DATE = new Date('2026-02-13T00:00:00').getTime()
+const TARGET_DATE = new Date('2026-02-14T00:00:00').getTime()
 
 const navItems = [
     { href: '/', label: 'Home', icon: Mail, lockable: false },
