@@ -6,7 +6,7 @@ import { motion, useMotionValue, useSpring, AnimatePresence } from 'framer-motio
 /* ═══════════════════════════════════════════════
    Target unlock date
    ═══════════════════════════════════════════════ */
-const TARGET = new Date('2026-02-14T00:00:00').getTime()
+const TARGET = new Date('2026-02-13T00:00:00').getTime()
 
 /* ═══════════════════════════════════════════════
    Toast messages on knock
