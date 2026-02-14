@@ -26,7 +26,7 @@ interface Prize {
 }
 
 interface FirebaseState {
-    tiles: BingoTile[]
+    tiles: BingoTile[] | Record<string, unknown>
     claimedMilestones: number
     hasClaimedGrandPrize: boolean
     hasShownReward: boolean
@@ -89,6 +89,53 @@ function createInitialGrid(): BingoTile[] {
     }))
 }
 
+/* ═══════════════════════════════════════════════
+   Sanitizer — the core fix for sparse-object bug
+   ═══════════════════════════════════════════════
+
+   Firebase RTDB converts arrays with null/missing
+   holes into plain objects: {"0": {...}, "2": {...}}.
+   This helper normalizes ANY shape back to BingoTile[9].
+*/
+function sanitizeTiles(raw: unknown): BingoTile[] {
+    const fallback = createInitialGrid()
+
+    if (!raw || typeof raw !== 'object') return fallback
+
+    // Convert object → array if Firebase returned a sparse object
+    let asArray: unknown[]
+    if (Array.isArray(raw)) {
+        asArray = raw
+    } else {
+        // It's a Record<string, unknown> — keys are "0","1",…
+        const keys = Object.keys(raw as Record<string, unknown>)
+        // Sort numerically to maintain correct tile order
+        keys.sort((a, b) => Number(a) - Number(b))
+        // Build a full 9-slot array, filling gaps with null
+        asArray = new Array(9).fill(null)
+        for (const k of keys) {
+            const idx = Number(k)
+            if (idx >= 0 && idx < 9) {
+                asArray[idx] = (raw as Record<string, unknown>)[k]
+            }
+        }
+    }
+
+    // Must have exactly 9 items
+    if (asArray.length !== 9) return fallback
+
+    return asArray.map((item, i) => {
+        if (!item || typeof item !== 'object') return fallback[i]
+        const obj = item as Record<string, unknown>
+        return {
+            id: typeof obj.id === 'string' ? obj.id : `tile-${i}`,
+            label: typeof obj.label === 'string' ? obj.label : tileLabels[i],
+            photo: typeof obj.photo === 'string' ? obj.photo : null,
+            rotation: typeof obj.rotation === 'number' ? obj.rotation : fallback[i].rotation,
+        }
+    })
+}
+
 /* Win Detection */
 const LINES = [
     [0, 1, 2], [3, 4, 5], [6, 7, 8],
@@ -97,14 +144,15 @@ const LINES = [
 ]
 
 function findWinningLines(tiles: BingoTile[]): number[][] {
-    return LINES.filter((line) => line.every((i) => tiles[i].photo !== null))
+    if (!tiles || tiles.length !== 9) return []
+    return LINES.filter((line) => line.every((i) => tiles[i]?.photo !== null))
 }
 
 /* ═══════════════════════════════════════════════
    Exported Bingo Component
    ═══════════════════════════════════════════════ */
 export default function IkeaBingo() {
-    const [tiles, setTiles] = useState<BingoTile[]>([])
+    const [tiles, setTiles] = useState<BingoTile[]>(() => createInitialGrid())
     const [loaded, setLoaded] = useState(false)
     const [winningLines, setWinningLines] = useState<number[][]>([])
     const [showReward, setShowReward] = useState(false)
@@ -113,40 +161,63 @@ export default function IkeaBingo() {
     const [hasClaimedGrandPrize, setHasClaimedGrandPrize] = useState(false)
     const [hasShownReward, setHasShownReward] = useState(false)
 
+    // Refs to avoid stale closures in the onValue callback
+    const isResetting = useRef(false)
+    const prevWinningLineCount = useRef(0)
+
     // Firebase Real-time Sync
     useEffect(() => {
         const dbRef = ref(db, SESSION_PATH)
-        
+
         const unsubscribe = onValue(dbRef, (snapshot) => {
+            // Skip processing while a reset is in-flight
+            if (isResetting.current) return
+
             const data = snapshot.val() as FirebaseState | null
-            
-            if (data && data.tiles && data.tiles.length === 9) {
-                // Data exists in Firebase - sync to local state
-                setTiles(data.tiles)
-                const lines = findWinningLines(data.tiles)
-                setWinningLines(lines)
-                setClaimedMilestones(data.claimedMilestones || 0)
-                setHasClaimedGrandPrize(data.hasClaimedGrandPrize || false)
-                setHasShownReward(data.hasShownReward || false)
-            } else {
-                // First time load - initialize grid and save to Firebase
+
+            if (data === null || data === undefined) {
+                // First-ever load: no data exists yet — seed Firebase
                 const initialTiles = createInitialGrid()
-                const initialState: FirebaseState = {
+                const initialState = {
                     tiles: initialTiles,
                     claimedMilestones: 0,
                     hasClaimedGrandPrize: false,
                     hasShownReward: false,
                 }
-                set(dbRef, initialState)
+                set(dbRef, initialState).catch(console.error)
                 setTiles(initialTiles)
+                setWinningLines([])
+                setClaimedMilestones(0)
+                setHasClaimedGrandPrize(false)
+                setHasShownReward(false)
+                prevWinningLineCount.current = 0
+                setLoaded(true)
+                return
             }
-            
+
+            // Sanitize tiles: handles sparse object, missing fields, etc.
+            const safeTiles = sanitizeTiles(data.tiles)
+            const lines = findWinningLines(safeTiles)
+            const newClaimedMilestones = typeof data.claimedMilestones === 'number' ? data.claimedMilestones : 0
+            const newHasClaimedGrandPrize = data.hasClaimedGrandPrize === true
+            const newHasShownReward = data.hasShownReward === true
+
+            // Update local state
+            setTiles(safeTiles)
+            setWinningLines(lines)
+            setClaimedMilestones(newClaimedMilestones)
+            setHasClaimedGrandPrize(newHasClaimedGrandPrize)
+            setHasShownReward(newHasShownReward)
+
+            // Track winning line count for next comparison
+            prevWinningLineCount.current = lines.length
             setLoaded(true)
         })
 
         return () => unsubscribe()
     }, [])
 
+    /* ─── Confetti helpers ─── */
     const showSmallPrizeConfetti = useCallback(() => {
         confetti({ particleCount: 200, spread: 120, origin: { y: 0.5 }, colors: ['#E29578', '#D4A373', '#F9F5F1'] })
         setTimeout(() => confetti({ particleCount: 120, angle: 60, spread: 60, origin: { x: 0 }, colors: ['#E29578', '#D4A373'] }), 200)
@@ -154,20 +225,15 @@ export default function IkeaBingo() {
     }, [])
 
     const showGrandPrizeConfetti = useCallback(() => {
-        // Massive explosion for grand prize
         const duration = 3000
         const animationEnd = Date.now() + duration
         const colors = ['#FFD700', '#E29578', '#D4A373', '#FF6B9D', '#F9F5F1']
-
         const randomInRange = (min: number, max: number) => Math.random() * (max - min) + min
-
         const interval = setInterval(() => {
             const timeLeft = animationEnd - Date.now()
             if (timeLeft <= 0) return clearInterval(interval)
-
-            const particleCount = 50 * (timeLeft / duration)
             confetti({
-                particleCount,
+                particleCount: 50 * (timeLeft / duration),
                 startVelocity: 30,
                 spread: 360,
                 origin: { x: randomInRange(0.1, 0.9), y: Math.random() - 0.2 },
@@ -176,84 +242,121 @@ export default function IkeaBingo() {
         }, 250)
     }, [])
 
+    /* ─── Photo Capture ─── */
     const handleCapture = useCallback(
-        async (id: string, file: File) => {
+        async (tileIndex: number, file: File) => {
             try {
                 const base64 = await resizeImageToBase64(file, 300, 0.7)
-                
-                // Find the tile index
-                const tileIndex = tiles.findIndex((t) => t.id === id)
-                if (tileIndex === -1) return
 
-                // Update the photo in Firebase
                 const dbRef = ref(db, SESSION_PATH)
+
+                // Step 1: Write ONLY the photo to the specific tile path.
+                // This is safe — no stale closure needed, we use the index directly.
                 await update(dbRef, {
                     [`tiles/${tileIndex}/photo`]: base64,
                 })
 
-                // Calculate new state (will be synced from Firebase, but we check locally for confetti)
-                const updatedTiles = tiles.map((t) => (t.id === id ? { ...t, photo: base64 } : t))
-                const newLines = findWinningLines(updatedTiles)
-                const newCompletedCount = updatedTiles.filter((t) => t.photo !== null).length
-                const prevLineCount = winningLines.length
-                const newLineCount = newLines.length
+                // Step 2: After the write succeeds, read fresh state from DB
+                // to determine prize logic — avoids the stale-closure bug entirely.
+                const { get } = await import('firebase/database')
+                const freshSnap = await get(dbRef)
+                const freshData = freshSnap.val() as FirebaseState | null
+                if (!freshData) return
+
+                const freshTiles = sanitizeTiles(freshData.tiles)
+                const freshLines = findWinningLines(freshTiles)
+                const completedCount = freshTiles.filter((t) => t.photo !== null).length
+                const freshMilestones = typeof freshData.claimedMilestones === 'number' ? freshData.claimedMilestones : 0
+                const freshGrand = freshData.hasClaimedGrandPrize === true
+                const freshShown = freshData.hasShownReward === true
 
                 // Check for Full House (Grand Prize)
-                if (newCompletedCount === 9 && !hasClaimedGrandPrize && !hasShownReward) {
+                if (completedCount === 9 && !freshGrand && !freshShown) {
                     await update(dbRef, {
                         hasClaimedGrandPrize: true,
                         hasShownReward: true,
-                        claimedMilestones: claimedMilestones >= SMALL_PRIZES.length ? claimedMilestones : SMALL_PRIZES.length,
+                        claimedMilestones: freshMilestones >= SMALL_PRIZES.length ? freshMilestones : SMALL_PRIZES.length,
                     })
-                    setTimeout(() => {
-                        showGrandPrizeConfetti()
-                    }, 300)
+                    setTimeout(() => showGrandPrizeConfetti(), 300)
                     setTimeout(() => {
                         setCurrentReward(GRAND_PRIZE)
                         setShowReward(true)
                     }, 800)
                 }
                 // Check for new line completion (Small Prize)
-                else if (newLineCount > prevLineCount && claimedMilestones < SMALL_PRIZES.length && !hasShownReward) {
-                    const newMilestoneCount = claimedMilestones + 1
+                else if (
+                    freshLines.length > prevWinningLineCount.current &&
+                    freshMilestones < SMALL_PRIZES.length &&
+                    !freshShown
+                ) {
+                    const prizeIndex = freshMilestones
+                    const newMilestoneCount = freshMilestones + 1
                     await update(dbRef, {
                         claimedMilestones: newMilestoneCount,
                         hasShownReward: true,
                     })
-                    const prizeIndex = claimedMilestones
-                    setTimeout(() => {
-                        showSmallPrizeConfetti()
-                    }, 300)
+                    setTimeout(() => showSmallPrizeConfetti(), 300)
                     setTimeout(() => {
                         setCurrentReward(SMALL_PRIZES[prizeIndex])
                         setShowReward(true)
                     }, 800)
                 }
-                // Just a regular capture
+                // Just a regular capture — small confetti
                 else {
                     confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 }, colors: ['#E29578', '#D4A373'] })
                 }
-
             } catch (err) {
                 console.error('Image processing failed:', err)
             }
         },
-        [tiles, winningLines.length, claimedMilestones, hasClaimedGrandPrize, hasShownReward, showSmallPrizeConfetti, showGrandPrizeConfetti]
+        [showSmallPrizeConfetti, showGrandPrizeConfetti]
     )
 
-    const resetGrid = useCallback(() => {
+    /* ─── Atomic Reset ─── */
+    const resetGrid = useCallback(async () => {
+        // Guard: prevent the onValue listener from racing us
+        isResetting.current = true
+
         const dbRef = ref(db, SESSION_PATH)
-        const initialState: FirebaseState = {
+        const initialState = {
             tiles: createInitialGrid(),
             claimedMilestones: 0,
             hasClaimedGrandPrize: false,
             hasShownReward: false,
         }
-        set(dbRef, initialState)
+
+        try {
+            // Atomic set — replaces the entire node in one write
+            await set(dbRef, initialState)
+        } catch (err) {
+            console.error('Reset failed:', err)
+        }
+
+        // Apply locally immediately (the onValue will also fire, but the guard prevents double-processing)
+        setTiles(initialState.tiles)
+        setWinningLines([])
+        setClaimedMilestones(0)
+        setHasClaimedGrandPrize(false)
+        setHasShownReward(false)
         setShowReward(false)
         setCurrentReward(null)
+        prevWinningLineCount.current = 0
+
+        // Re-enable the listener on next tick so the onValue callback from our own set() is skipped
+        setTimeout(() => {
+            isResetting.current = false
+        }, 100)
     }, [])
 
+    /* ─── Dismiss reward & clear the flag so future rewards can fire ─── */
+    const dismissReward = useCallback(() => {
+        setShowReward(false)
+        // Clear hasShownReward in Firebase so the next milestone can trigger
+        const dbRef = ref(db, SESSION_PATH)
+        update(dbRef, { hasShownReward: false }).catch(console.error)
+    }, [])
+
+    /* ─── Derived UI state ─── */
     const completedCount = tiles.filter((t) => t.photo !== null).length
     const winningIndices = new Set(winningLines.flat())
 
@@ -261,6 +364,15 @@ export default function IkeaBingo() {
         return (
             <div className="flex items-center justify-center py-20">
                 <p className="font-hand text-lg text-ink/40 animate-pulse">Loading…</p>
+            </div>
+        )
+    }
+
+    // Safety net: if tiles is somehow not length 9, show loading
+    if (!tiles || tiles.length !== 9) {
+        return (
+            <div className="flex items-center justify-center py-20">
+                <p className="font-hand text-lg text-ink/40 animate-pulse">Recovering…</p>
             </div>
         )
     }
@@ -344,7 +456,7 @@ export default function IkeaBingo() {
                         animate={{ opacity: 1 }}
                         exit={{ opacity: 0 }}
                     >
-                        <div className="absolute inset-0 bg-ink/50" onClick={() => setShowReward(false)} />
+                        <div className="absolute inset-0 bg-ink/50" onClick={dismissReward} />
                         <motion.div
                             className="relative z-10 w-full max-w-sm"
                             initial={{ scale: 0.85, y: 30 }}
@@ -355,10 +467,9 @@ export default function IkeaBingo() {
                             <div
                                 className={`
                                     rounded-2xl p-8 text-center shadow-scrapbook-hover
-                                    ${
-                                        currentReward.code === GRAND_PRIZE.code
-                                            ? 'bg-gradient-to-br from-yellow-50 via-orange-50 to-pink-50 border-4 border-yellow-400'
-                                            : 'bg-[#FDF8F4]'
+                                    ${currentReward.code === GRAND_PRIZE.code
+                                        ? 'bg-gradient-to-br from-yellow-50 via-orange-50 to-pink-50 border-4 border-yellow-400'
+                                        : 'bg-[#FDF8F4]'
                                     }
                                 `}
                                 style={{ transform: 'rotate(-1deg)' }}
@@ -367,10 +478,9 @@ export default function IkeaBingo() {
                                 <p
                                     className={`
                                         font-hand text-sm mb-2 mt-2
-                                        ${
-                                            currentReward.code === GRAND_PRIZE.code
-                                                ? 'text-yellow-600 font-bold text-base'
-                                                : 'text-ink/35'
+                                        ${currentReward.code === GRAND_PRIZE.code
+                                            ? 'text-yellow-600 font-bold text-base'
+                                            : 'text-ink/35'
                                         }
                                     `}
                                 >
@@ -379,10 +489,9 @@ export default function IkeaBingo() {
                                 <h2
                                     className={`
                                         font-hand text-ink leading-tight mb-3
-                                        ${
-                                            currentReward.code === GRAND_PRIZE.code
-                                                ? 'text-4xl sm:text-5xl'
-                                                : 'text-3xl'
+                                        ${currentReward.code === GRAND_PRIZE.code
+                                            ? 'text-4xl sm:text-5xl'
+                                            : 'text-3xl'
                                         }
                                     `}
                                 >
@@ -394,13 +503,12 @@ export default function IkeaBingo() {
                                 <p className="font-hand text-lg text-rose/70 mb-5">{currentReward.description}</p>
                                 <p className="font-hand text-xs text-ink/20 mb-5">Code: {currentReward.code}</p>
                                 <button
-                                    onClick={() => setShowReward(false)}
+                                    onClick={dismissReward}
                                     className={`
                                         w-full py-3 rounded-full font-hand text-lg transition-colors
-                                        ${
-                                            currentReward.code === GRAND_PRIZE.code
-                                                ? 'bg-gradient-to-r from-yellow-400 via-pink-400 to-purple-400 hover:from-yellow-500 hover:via-pink-500 hover:to-purple-500 text-white font-bold'
-                                                : 'bg-accent hover:bg-accent/90 text-white'
+                                        ${currentReward.code === GRAND_PRIZE.code
+                                            ? 'bg-gradient-to-r from-yellow-400 via-pink-400 to-purple-400 hover:from-yellow-500 hover:via-pink-500 hover:to-purple-500 text-white font-bold'
+                                            : 'bg-accent hover:bg-accent/90 text-white'
                                         }
                                     `}
                                 >
@@ -427,14 +535,14 @@ function JournalCell({
     tile: BingoTile
     index: number
     isWinning: boolean
-    onCapture: (id: string, file: File) => void
+    onCapture: (tileIndex: number, file: File) => void
 }) {
     const inputRef = useRef<HTMLInputElement>(null)
     const isDone = tile.photo !== null
 
     const handleChange = (e: React.ChangeEvent<HTMLInputElement>) => {
         const file = e.target.files?.[0]
-        if (file) onCapture(tile.id, file)
+        if (file) onCapture(index, file)
         if (inputRef.current) inputRef.current.value = ''
     }
 
