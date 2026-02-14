@@ -5,6 +5,8 @@ import { motion, AnimatePresence } from 'framer-motion'
 import confetti from 'canvas-confetti'
 import { Camera } from 'lucide-react'
 import { resizeImageToBase64 } from '@/utils/imageProcessor'
+import { ref, onValue, set, update } from 'firebase/database'
+import { db } from '@/lib/firebase'
 
 /* ═══════════════════════════════════════════════
    Types & Data
@@ -23,13 +25,14 @@ interface Prize {
     code: string
 }
 
-interface SavedState {
+interface FirebaseState {
     tiles: BingoTile[]
     claimedMilestones: number
     hasClaimedGrandPrize: boolean
+    hasShownReward: boolean
 }
 
-const STORAGE_KEY = 'ikea-bingo-state'
+const SESSION_PATH = 'bingo/session_oyen_tian'
 
 const tileLabels = [
     'Barang Paling\nGak Guna',
@@ -108,40 +111,41 @@ export default function IkeaBingo() {
     const [currentReward, setCurrentReward] = useState<Prize | null>(null)
     const [claimedMilestones, setClaimedMilestones] = useState(0)
     const [hasClaimedGrandPrize, setHasClaimedGrandPrize] = useState(false)
+    const [hasShownReward, setHasShownReward] = useState(false)
 
+    // Firebase Real-time Sync
     useEffect(() => {
-        try {
-            const saved = localStorage.getItem(STORAGE_KEY)
-            if (saved) {
-                const parsed: SavedState = JSON.parse(saved)
-                if (parsed.tiles && parsed.tiles.length === 9) {
-                    setTiles(parsed.tiles)
-                    const lines = findWinningLines(parsed.tiles)
-                    setWinningLines(lines)
-                    setClaimedMilestones(parsed.claimedMilestones || 0)
-                    setHasClaimedGrandPrize(parsed.hasClaimedGrandPrize || false)
-                } else {
-                    setTiles(createInitialGrid())
-                }
+        const dbRef = ref(db, SESSION_PATH)
+        
+        const unsubscribe = onValue(dbRef, (snapshot) => {
+            const data = snapshot.val() as FirebaseState | null
+            
+            if (data && data.tiles && data.tiles.length === 9) {
+                // Data exists in Firebase - sync to local state
+                setTiles(data.tiles)
+                const lines = findWinningLines(data.tiles)
+                setWinningLines(lines)
+                setClaimedMilestones(data.claimedMilestones || 0)
+                setHasClaimedGrandPrize(data.hasClaimedGrandPrize || false)
+                setHasShownReward(data.hasShownReward || false)
             } else {
-                setTiles(createInitialGrid())
+                // First time load - initialize grid and save to Firebase
+                const initialTiles = createInitialGrid()
+                const initialState: FirebaseState = {
+                    tiles: initialTiles,
+                    claimedMilestones: 0,
+                    hasClaimedGrandPrize: false,
+                    hasShownReward: false,
+                }
+                set(dbRef, initialState)
+                setTiles(initialTiles)
             }
-        } catch {
-            setTiles(createInitialGrid())
-        }
-        setLoaded(true)
-    }, [])
+            
+            setLoaded(true)
+        })
 
-    useEffect(() => {
-        if (loaded && tiles.length === 9) {
-            const state: SavedState = {
-                tiles,
-                claimedMilestones,
-                hasClaimedGrandPrize,
-            }
-            localStorage.setItem(STORAGE_KEY, JSON.stringify(state))
-        }
-    }, [tiles, loaded, claimedMilestones, hasClaimedGrandPrize])
+        return () => unsubscribe()
+    }, [])
 
     const showSmallPrizeConfetti = useCallback(() => {
         confetti({ particleCount: 200, spread: 120, origin: { y: 0.5 }, colors: ['#E29578', '#D4A373', '#F9F5F1'] })
@@ -176,60 +180,78 @@ export default function IkeaBingo() {
         async (id: string, file: File) => {
             try {
                 const base64 = await resizeImageToBase64(file, 300, 0.7)
-                setTiles((prev) => {
-                    const next = prev.map((t) => (t.id === id ? { ...t, photo: base64 } : t))
-                    const newLines = findWinningLines(next)
-                    const newCompletedCount = next.filter((t) => t.photo !== null).length
-                    const prevLineCount = winningLines.length
-                    const newLineCount = newLines.length
+                
+                // Find the tile index
+                const tileIndex = tiles.findIndex((t) => t.id === id)
+                if (tileIndex === -1) return
 
-                    setWinningLines(newLines)
-
-                    // Check for Full House (Grand Prize)
-                    if (newCompletedCount === 9 && !hasClaimedGrandPrize) {
-                        setTimeout(() => {
-                            showGrandPrizeConfetti()
-                        }, 300)
-                        setTimeout(() => {
-                            setCurrentReward(GRAND_PRIZE)
-                            setShowReward(true)
-                            setHasClaimedGrandPrize(true)
-                        }, 800)
-                    }
-                    // Check for new line completion (Small Prize)
-                    else if (newLineCount > prevLineCount && claimedMilestones < SMALL_PRIZES.length) {
-                        const prizeIndex = claimedMilestones
-                        setTimeout(() => {
-                            showSmallPrizeConfetti()
-                        }, 300)
-                        setTimeout(() => {
-                            setCurrentReward(SMALL_PRIZES[prizeIndex])
-                            setShowReward(true)
-                            setClaimedMilestones((prev) => prev + 1)
-                        }, 800)
-                    }
-                    // Just a regular capture
-                    else {
-                        confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 }, colors: ['#E29578', '#D4A373'] })
-                    }
-
-                    return next
+                // Update the photo in Firebase
+                const dbRef = ref(db, SESSION_PATH)
+                await update(dbRef, {
+                    [`tiles/${tileIndex}/photo`]: base64,
                 })
+
+                // Calculate new state (will be synced from Firebase, but we check locally for confetti)
+                const updatedTiles = tiles.map((t) => (t.id === id ? { ...t, photo: base64 } : t))
+                const newLines = findWinningLines(updatedTiles)
+                const newCompletedCount = updatedTiles.filter((t) => t.photo !== null).length
+                const prevLineCount = winningLines.length
+                const newLineCount = newLines.length
+
+                // Check for Full House (Grand Prize)
+                if (newCompletedCount === 9 && !hasClaimedGrandPrize && !hasShownReward) {
+                    await update(dbRef, {
+                        hasClaimedGrandPrize: true,
+                        hasShownReward: true,
+                        claimedMilestones: claimedMilestones >= SMALL_PRIZES.length ? claimedMilestones : SMALL_PRIZES.length,
+                    })
+                    setTimeout(() => {
+                        showGrandPrizeConfetti()
+                    }, 300)
+                    setTimeout(() => {
+                        setCurrentReward(GRAND_PRIZE)
+                        setShowReward(true)
+                    }, 800)
+                }
+                // Check for new line completion (Small Prize)
+                else if (newLineCount > prevLineCount && claimedMilestones < SMALL_PRIZES.length && !hasShownReward) {
+                    const newMilestoneCount = claimedMilestones + 1
+                    await update(dbRef, {
+                        claimedMilestones: newMilestoneCount,
+                        hasShownReward: true,
+                    })
+                    const prizeIndex = claimedMilestones
+                    setTimeout(() => {
+                        showSmallPrizeConfetti()
+                    }, 300)
+                    setTimeout(() => {
+                        setCurrentReward(SMALL_PRIZES[prizeIndex])
+                        setShowReward(true)
+                    }, 800)
+                }
+                // Just a regular capture
+                else {
+                    confetti({ particleCount: 30, spread: 50, origin: { y: 0.7 }, colors: ['#E29578', '#D4A373'] })
+                }
+
             } catch (err) {
                 console.error('Image processing failed:', err)
             }
         },
-        [winningLines.length, claimedMilestones, hasClaimedGrandPrize, showSmallPrizeConfetti, showGrandPrizeConfetti]
+        [tiles, winningLines.length, claimedMilestones, hasClaimedGrandPrize, hasShownReward, showSmallPrizeConfetti, showGrandPrizeConfetti]
     )
 
     const resetGrid = useCallback(() => {
-        setTiles(createInitialGrid())
-        setWinningLines([])
+        const dbRef = ref(db, SESSION_PATH)
+        const initialState: FirebaseState = {
+            tiles: createInitialGrid(),
+            claimedMilestones: 0,
+            hasClaimedGrandPrize: false,
+            hasShownReward: false,
+        }
+        set(dbRef, initialState)
         setShowReward(false)
         setCurrentReward(null)
-        setClaimedMilestones(0)
-        setHasClaimedGrandPrize(false)
-        localStorage.removeItem(STORAGE_KEY)
     }, [])
 
     const completedCount = tiles.filter((t) => t.photo !== null).length
